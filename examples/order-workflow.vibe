@@ -1,0 +1,68 @@
+---
+@vibe: 0.1
+@domain: order
+@module: order-workflow
+@scope: domain-layer
+@risk: medium
+---
+
+# Order Workflow Service
+
+## Contract
+
+**Events** (not an API; internal state transitions)
+
+- `OrderCreated`
+- `OrderPaid`
+- `OrderShipped`
+- `OrderDelivered`
+- `OrderCancelled`
+
+## Types
+
+- `OrderStatus`: enum [pending, paid, shipped, delivered, cancelled].
+- `Order`: aggregate with fields: id, userId, items, totalAmount, status, createdAt.
+
+## NFR
+
+- ~ State transition latency < 50ms
+- ! Consistency: no two concurrent transitions for same order ID
+
+---
+
+## Logic
+
+### State machine (allowed transitions)
+- => pending -> paid
+- => pending -> cancelled
+- => paid -> shipped
+- => shipped -> delivered
+- => shipped -> cancelled (only if not yet shipped)
+- !invariant Order total must equal sum(item.price * item.quantity)
+
+### Transition rules
+
+- ! Order can only transition from its current status to an allowed next status
+- ! Cancellation is only allowed if order is pending or shipped (not delivered)
+- -> On `OrderPaid` event -> update inventory (reserved stock becomes sold)
+- -> On `OrderShipped` event -> notify shipping carrier, send tracking email to user
+- -> On `OrderDelivered` event -> mark order as complete, release payment to seller
+- ? Payment failed after order creation -> automatically cancel order (pending → cancelled)
+- ? Shipping carrier API unavailable -> retry up to 3 times, then escalate to manual
+
+## Decision
+
+- # State machine enforced by database check constraints (status enum + transition rules) @since v1.0
+- # Using outbox pattern for emitting domain events to ensure reliability @since v1.5
+
+## Testing
+
+- % Transition from pending to paid should succeed with valid payment
+- % Transition from pending to shipped should be rejected
+- % Cancelling a delivered order should be rejected
+- % Concurrent transition attempts should result in exactly one success (optimistic locking)
+
+## Security & Compliance
+
+- !security-sensitive Order cancellation must be authorized by the same user or an admin
+- !security-aware All order state changes must be logged with timestamp, actor, and old/new status

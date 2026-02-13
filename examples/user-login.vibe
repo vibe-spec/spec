@@ -1,0 +1,65 @@
+---
+@vibe: 0.1
+@domain: auth
+@module: user-login
+@scope: service-layer
+@risk: medium
+---
+
+# User Login Service
+
+## Contract
+
+**POST /api/v1/login**
+
+- In: { username, password }
+- Out(200): { token, expiresIn }
+- Error(401): INVALID_CREDENTIALS
+- Error(429): TOO_MANY_ATTEMPTS
+- Auth: none (public endpoint)
+- Idempotency: not required
+- Transaction: none
+
+## Types
+
+- `username`: string, 3–32 characters, alphanumeric + underscore.
+- `password`: string, minimum 8 characters, must contain at least one number and one letter.
+- `token`: JWT string, expires in 15 minutes.
+
+## NFR
+
+- ~ Response time < 200ms (p95)
+- ! Concurrency ≥ 100 req/s
+- SLA: 99.9% uptime
+
+---
+
+## Logic
+
+- ! Username must exist in the database
+- ! Password must match the stored hash
+- ! Account must not be locked
+- !security-critical Password verification must use bcrypt (cost ≥ 12); never log raw passwords
+- !security-sensitive Failed attempts per username must be rate‑limited: max 5 per 15 minutes
+- -> Login succeeds -> generate JWT token
+- -> Login succeeds -> reset failed attempts counter
+- -> Login fails -> increment failed attempts counter
+- ? Failed attempts exceed limit -> lock account for 15 minutes and return 429
+- ? Database unavailable -> fallback to read‑only replica if possible, otherwise return 503
+- !invariant Failed attempts counter must never go negative
+
+## Decision
+
+- # Using Redis for rate‑limiting counters @since v1.2 @evolving (plan to move to a dedicated rate‑limiting service)
+
+## Testing
+
+- % Valid credentials should return 200 and a token
+- % Invalid password should return 401 and increment counter
+- % After 5 failures, account should be locked for 15 minutes
+- % Locked account should return 429 even with correct password
+
+## Security & Compliance
+
+- !security-critical Passwords must never appear in logs, error messages, or metrics
+- !security-aware Login events (success/failure) must be logged with timestamp, username (masked), and IP address

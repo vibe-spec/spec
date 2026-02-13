@@ -1,0 +1,67 @@
+---
+@vibe: 0.1
+@domain: payment
+@module: charge
+@scope: service-layer
+@risk: high
+---
+
+# Payment Charge Service
+
+## Contract
+
+**POST /api/v1/charges**
+
+- In: { userId, amount, currency, paymentMethodId, idempotencyKey }
+- Out(200): { chargeId, status }
+- Error(400): INVALID_AMOUNT, UNSUPPORTED_CURRENCY
+- Error(402): PAYMENT_FAILED
+- Error(409): DUPLICATE_IDEMPOTENCY_KEY
+- Auth: JWT Bearer Token (scope: payment:write)
+- Idempotency: required (idempotencyKey in request body)
+- Transaction: distributed saga (local transaction + external PSP)
+
+## Types
+
+- `amount`: positive integer, in minor units (e.g., cents), max 1,000,000.
+- `currency`: ISO 4217 code, currently supported: USD, EUR, GBP.
+- `status`: enum [pending, succeeded, failed].
+
+## NFR
+
+- ~ Response time < 500ms (p95)
+- ! Concurrency ≥ 500 req/s
+- SLA: 99.95% uptime
+
+---
+
+## Logic
+
+- ! User must exist and have a valid payment method
+- ! Amount must be positive and within per‑transaction limit (≤ 10,000 USD)
+- ! Idempotency key must be unique for the combination (userId, idempotencyKey)
+- -> Validate request -> reserve funds locally
+- -> Call external PSP (payment provider)
+- ^-> On PSP success -> mark charge as succeeded, commit local transaction
+- ? PSP failure (declined) -> mark charge as failed, return 402
+- ? PSP timeout -> retry up to 2 times with exponential backoff
+- ? PSP consistently failing -> fallback to alternative PSP if configured
+- !invariant Sum of all charges for a user must never exceed their credit limit (if applicable)
+
+## Decision
+
+- # Idempotency stored in Redis with TTL = 24 hours @since v2.0
+- # Using Stripe as primary PSP, Adyen as fallback @since v2.1
+
+## Testing
+
+- % Valid charge should return 200 and succeed
+- % Duplicate idempotency key should return 409 without charging again
+- % PSP failure should return 402 and not commit funds
+- % Concurrency test: multiple identical idempotency keys should only process one
+
+## Security & Compliance
+
+- !security-critical Payment method details (e.g., card numbers) must never be logged
+- !security-sensitive All PSP communications must use mutual TLS
+- !security-aware Charge events must be logged with userId, amount, and status (excluding payment details)
